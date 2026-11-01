@@ -1,4 +1,7 @@
 
+import asyncio
+import time
+
 import httpx
 
 from app.config import COINGECKO_API_KEY, COINGECKO_BASE_URL
@@ -9,8 +12,13 @@ STABLECOINS = {
     "dai": {"symbol": "DAI", "name": "Dai"},
 }
 
+# Cache results so every page view doesn't hit CoinGecko (avoids HTTP 429).
+CACHE_TTL_SECONDS = 60
+_cache = {"data": None, "fetched_at": 0.0}
+_lock = asyncio.Lock()
 
-async def fetch_market_data():
+
+async def _fetch_from_provider():
     url = f"{COINGECKO_BASE_URL}/coins/markets"
 
     params = {
@@ -53,3 +61,22 @@ async def fetch_market_data():
         })
 
     return results
+
+
+async def fetch_market_data():
+    async with _lock:
+        age = time.monotonic() - _cache["fetched_at"]
+        if _cache["data"] is not None and age < CACHE_TTL_SECONDS:
+            return _cache["data"]
+
+        try:
+            data = await _fetch_from_provider()
+        except (httpx.HTTPStatusError, httpx.RequestError):
+            # Serve the last good data if we have it; otherwise re-raise.
+            if _cache["data"] is not None:
+                return _cache["data"]
+            raise
+
+        _cache["data"] = data
+        _cache["fetched_at"] = time.monotonic()
+        return data
